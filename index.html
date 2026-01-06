@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Basketball Stats Tracker</title>
+  
+  <!-- PWA Meta Tags for Add to Home Screen -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BB Stats">
+  <meta name="theme-color" content="#ea580c">
+  
+  <!-- Favicon as data URI (basketball emoji) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏀</text></svg>">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏀</text></svg>">
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  
+  <style>
+    /* Prevent pull-to-refresh on mobile */
+    body {
+      overscroll-behavior-y: contain;
+    }
+    /* Hide scrollbar but allow scrolling */
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    /* Full height on mobile */
+    html, body, #root {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    
+    // Lucide icons as components
+    const Icon = ({ name, size = 24, className = "" }) => {
+      const ref = React.useRef(null);
+      useEffect(() => {
+        if (ref.current) {
+          ref.current.innerHTML = '';
+          const icon = lucide.createElement(lucide.icons[name]);
+          icon.setAttribute('width', size);
+          icon.setAttribute('height', size);
+          if (className) icon.setAttribute('class', className);
+          ref.current.appendChild(icon);
+        }
+      }, [name, size, className]);
+      return <span ref={ref} style={{ display: 'inline-flex', verticalAlign: 'middle' }} />;
+    };
+
+    // Local Storage helpers (works offline)
+    const storage = {
+      get: async (key) => {
+        try {
+          const value = localStorage.getItem(key);
+          return value ? { value } : null;
+        } catch (e) { return null; }
+      },
+      set: async (key, value) => {
+        try {
+          localStorage.setItem(key, value);
+          return { key, value };
+        } catch (e) { return null; }
+      },
+      delete: async (key) => {
+        try {
+          localStorage.removeItem(key);
+          return { key, deleted: true };
+        } catch (e) { return null; }
+      },
+      list: async (prefix) => {
+        try {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith(prefix)) keys.push(key);
+          }
+          return { keys };
+        } catch (e) { return { keys: [] }; }
+      }
+    };
+
+const BasketballStatsApp = () => {
+  const [screen, setScreen] = useState('home');
+  const [games, setGames] = useState([]);
+  const [currentGame, setCurrentGame] = useState(null);
+  const [currentPeriod, setCurrentPeriod] = useState(1);
+  const [gameLog, setGameLog] = useState([]);
+  const [filterPeriod, setFilterPeriod] = useState('Total');
+  const [lastStat, setLastStat] = useState(null);
+  const [darkMode, setDarkMode] = useState(false);
+  const [shotChartPopup, setShotChartPopup] = useState(null);
+  const [viewingShotChart, setViewingShotChart] = useState(null);
+  const [shotChartFilter, setShotChartFilter] = useState('all');
+  const [showQuality, setShowQuality] = useState(false);
+  const [isEndGameView, setIsEndGameView] = useState(false);
+
+  useEffect(() => {
+    const loadGames = async () => {
+      try {
+        const result = await storage.list('game:');
+        if (result && result.keys) {
+          const loadedGames = await Promise.all(
+            result.keys.map(async (key) => {
+              const data = await storage.get(key);
+              return data ? JSON.parse(data.value) : null;
+            })
+          );
+          setGames(loadedGames.filter(g => g !== null));
+        }
+      } catch (error) {
+        console.log('No previous games found');
+      }
+    };
+    loadGames();
+    const loadDarkMode = async () => {
+      try {
+        const result = await storage.get('darkMode');
+        if (result) setDarkMode(JSON.parse(result.value));
+      } catch (e) {}
+    };
+    loadDarkMode();
+  }, []);
+
+  const toggleDarkMode = async () => {
+    const newMode = !darkMode;
+    setDarkMode(newMode);
+    try { await storage.set('darkMode', JSON.stringify(newMode)); } catch (e) {}
+  };
+
+  const saveGame = async (game) => {
+    await storage.set(`game:${game.id}`, JSON.stringify(game));
+  };
+
+  const deleteGame = async (gameId) => {
+    await storage.delete(`game:${gameId}`);
+    setGames(games.filter(g => g.id !== gameId));
+  };
+
+  const calculateTeamScore = (game) => {
+    if (!game || !game.players) return 0;
+    return game.players.reduce((total, player) => {
+      const stats = player.stats || {};
+      return total + (stats['2ptMade'] || 0) * 2 + (stats['3ptMade'] || 0) * 3 + (stats['FTMade'] || 0);
+    }, 0);
+  };
+
+  const calculateOpponentScore = (game) => {
+    if (!game || !game.opponent) return 0;
+    const stats = game.opponent.stats || {};
+    return (stats['2ptMade'] || 0) * 2 + (stats['3ptMade'] || 0) * 3 + (stats['FTMade'] || 0);
+  };
+
+  const calculatePlayerPoints = (player) => {
+    const stats = player.stats || {};
+    return (stats['2ptMade'] || 0) * 2 + (stats['3ptMade'] || 0) * 3 + (stats['FTMade'] || 0);
+  };
+
+  const getPlayerRebounds = (player) => {
+    const stats = player.stats || {};
+    return (stats['OffReb'] || 0) + (stats['DefReb'] || 0);
+  };
+
+  const startNewGame = (gameInfo) => {
+    const newGame = {
+      id: Date.now(),
+      teamName: gameInfo.teamName,
+      opponentName: gameInfo.opponent,
+      date: gameInfo.date,
+      location: gameInfo.location,
+      enableShotChart: gameInfo.enableShotChart,
+      players: gameInfo.players.map(p => ({
+        ...p,
+        stats: { '2ptMade': 0, '2ptMiss': 0, '3ptMade': 0, '3ptMiss': 0, 'FTMade': 0, 'FTMiss': 0, 'OffReb': 0, 'DefReb': 0, 'Ast': 0, 'Stl': 0, 'Blk': 0, 'TO': 0, 'Foul': 0, 'ForceJB': 0, 'ConcedeJB': 0 },
+        periodStats: {},
+        shotChart: []
+      })),
+      opponent: {
+        stats: { '2ptMade': 0, '2ptMiss': 0, '3ptMade': 0, '3ptMiss': 0, 'FTMade': 0, 'FTMiss': 0, 'OffReb': 0, 'DefReb': 0, 'Ast': 0, 'Stl': 0, 'Blk': 0, 'TO': 0, 'Foul': 0, 'ForceJB': 0, 'ConcedeJB': 0 },
+        periodStats: {}
+      },
+      maxPeriod: 1
+    };
+    setCurrentGame(newGame);
+    setCurrentPeriod(1);
+    setGameLog([]);
+    setLastStat(null);
+    setIsEndGameView(false);
+    setScreen('game');
+  };
+
+  const handleFieldGoalClick = (playerIndex, statType) => {
+    if (playerIndex === 'opponent' || !currentGame.enableShotChart) {
+      recordStat(playerIndex, statType);
+      return;
+    }
+    setShotChartPopup({ playerIndex, statType, step: 'location', x: null, y: null });
+  };
+
+  const handleCourtClick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    setShotChartPopup(prev => ({ ...prev, x, y, step: 'quality' }));
+  };
+
+  const handleQualitySelect = (quality) => {
+    const { playerIndex, statType, x, y } = shotChartPopup;
+    const isMade = statType.includes('Made');
+    const updatedGame = { ...currentGame };
+    const player = updatedGame.players[playerIndex];
+    player.shotChart = player.shotChart || [];
+    player.shotChart.push({ x, y, made: isMade, is3pt: statType.includes('3pt'), quality, period: currentPeriod, time: Date.now() });
+    setCurrentGame(updatedGame);
+    setShotChartPopup(null);
+    recordStat(playerIndex, statType, updatedGame);
+  };
+
+  const recordStat = (playerIndex, statType, gameOverride = null) => {
+    const updatedGame = gameOverride ? { ...gameOverride } : { ...currentGame };
+    const isOpponent = playerIndex === 'opponent';
+    const player = isOpponent ? updatedGame.opponent : updatedGame.players[playerIndex];
+    player.stats[statType] = (player.stats[statType] || 0) + 1;
+    if (!player.periodStats[currentPeriod]) player.periodStats[currentPeriod] = {};
+    player.periodStats[currentPeriod][statType] = (player.periodStats[currentPeriod][statType] || 0) + 1;
+    if (currentPeriod > updatedGame.maxPeriod) updatedGame.maxPeriod = currentPeriod;
+
+    const statLabel = { '2ptMade': '2PT Made', '2ptMiss': '2PT Miss', '3ptMade': '3PT Made', '3ptMiss': '3PT Miss', 'FTMade': 'FT Made', 'FTMiss': 'FT Miss', 'OffReb': 'Off Reb', 'DefReb': 'Def Reb', 'Ast': 'Assist', 'Stl': 'Steal', 'Blk': 'Block', 'TO': 'Turnover', 'Foul': 'Foul', 'ForceJB': 'Force JB', 'ConcedeJB': 'Concede JB' };
+    const playerName = isOpponent ? 'Opponent' : `#${player.number} ${player.name}`;
+    
+    let displayText = '';
+    if (statType === '2ptMade' || statType === '3ptMade' || statType === 'FTMade') {
+      displayText = `${playerName} - ${statLabel[statType]} (${calculatePlayerPoints(player)} pts)`;
+    } else if (statType === '2ptMiss' || statType === '3ptMiss') {
+      const fgMade = (player.stats['2ptMade'] || 0) + (player.stats['3ptMade'] || 0);
+      const fgMiss = (player.stats['2ptMiss'] || 0) + (player.stats['3ptMiss'] || 0);
+      const fgPct = fgMade + fgMiss > 0 ? Math.round((fgMade / (fgMade + fgMiss)) * 100) : 0;
+      displayText = `${playerName} - ${statLabel[statType]} (${fgMade}/${fgMade + fgMiss}, ${fgPct}%)`;
+    } else if (statType === 'FTMiss') {
+      const ftMade = player.stats['FTMade'] || 0;
+      const ftMiss = player.stats['FTMiss'] || 0;
+      const ftPct = ftMade + ftMiss > 0 ? Math.round((ftMade / (ftMade + ftMiss)) * 100) : 0;
+      displayText = `${playerName} - ${statLabel[statType]} (${ftMade}/${ftMade + ftMiss}, ${ftPct}%)`;
+    } else {
+      displayText = `${playerName} - ${statLabel[statType]} (${player.stats[statType]})`;
+    }
+
+    setGameLog([{ time: Date.now(), period: currentPeriod, playerIndex, statType, text: displayText }, ...gameLog]);
+    setLastStat({ text: displayText });
+
+    if (!isOpponent) {
+      if (statType === 'Stl') {
+        updatedGame.opponent.stats['TO'] = (updatedGame.opponent.stats['TO'] || 0) + 1;
+        if (!updatedGame.opponent.periodStats[currentPeriod]) updatedGame.opponent.periodStats[currentPeriod] = {};
+        updatedGame.opponent.periodStats[currentPeriod]['TO'] = (updatedGame.opponent.periodStats[currentPeriod]['TO'] || 0) + 1;
+      } else if (statType === 'ForceJB') {
+        updatedGame.opponent.stats['ConcedeJB'] = (updatedGame.opponent.stats['ConcedeJB'] || 0) + 1;
+        if (!updatedGame.opponent.periodStats[currentPeriod]) updatedGame.opponent.periodStats[currentPeriod] = {};
+        updatedGame.opponent.periodStats[currentPeriod]['ConcedeJB'] = (updatedGame.opponent.periodStats[currentPeriod]['ConcedeJB'] || 0) + 1;
+      } else if (statType === 'ConcedeJB') {
+        updatedGame.opponent.stats['ForceJB'] = (updatedGame.opponent.stats['ForceJB'] || 0) + 1;
+        if (!updatedGame.opponent.periodStats[currentPeriod]) updatedGame.opponent.periodStats[currentPeriod] = {};
+        updatedGame.opponent.periodStats[currentPeriod]['ForceJB'] = (updatedGame.opponent.periodStats[currentPeriod]['ForceJB'] || 0) + 1;
+      }
+    }
+    setCurrentGame(updatedGame);
+  };
+
+  const undoLastStat = () => {
+    if (gameLog.length === 0) return;
+    const lastEntry = gameLog[0];
+    
+    if (lastEntry.statType === 'endPeriod') {
+      const newLog = gameLog.slice(1);
+      setGameLog(newLog);
+      setCurrentPeriod(lastEntry.period);
+      setLastStat(newLog.length > 0 ? { text: newLog[0].text } : null);
+      return;
+    }
+    
+    const updatedGame = { ...currentGame };
+    const isOpponent = lastEntry.playerIndex === 'opponent';
+    const player = isOpponent ? updatedGame.opponent : updatedGame.players[lastEntry.playerIndex];
+    if (player.stats[lastEntry.statType] > 0) player.stats[lastEntry.statType]--;
+    const logPeriod = lastEntry.period;
+    if (player.periodStats[logPeriod] && player.periodStats[logPeriod][lastEntry.statType] > 0) {
+      player.periodStats[logPeriod][lastEntry.statType]--;
+    }
+    if (!isOpponent && (lastEntry.statType.includes('2pt') || lastEntry.statType.includes('3pt'))) {
+      if (player.shotChart && player.shotChart.length > 0) player.shotChart.pop();
+    }
+    if (!isOpponent) {
+      if (lastEntry.statType === 'Stl' && updatedGame.opponent.stats['TO'] > 0) {
+        updatedGame.opponent.stats['TO']--;
+        if (updatedGame.opponent.periodStats[logPeriod]) updatedGame.opponent.periodStats[logPeriod]['TO'] = Math.max(0, (updatedGame.opponent.periodStats[logPeriod]['TO'] || 0) - 1);
+      } else if (lastEntry.statType === 'ForceJB' && updatedGame.opponent.stats['ConcedeJB'] > 0) {
+        updatedGame.opponent.stats['ConcedeJB']--;
+        if (updatedGame.opponent.periodStats[logPeriod]) updatedGame.opponent.periodStats[logPeriod]['ConcedeJB'] = Math.max(0, (updatedGame.opponent.periodStats[logPeriod]['ConcedeJB'] || 0) - 1);
+      } else if (lastEntry.statType === 'ConcedeJB' && updatedGame.opponent.stats['ForceJB'] > 0) {
+        updatedGame.opponent.stats['ForceJB']--;
+        if (updatedGame.opponent.periodStats[logPeriod]) updatedGame.opponent.periodStats[logPeriod]['ForceJB'] = Math.max(0, (updatedGame.opponent.periodStats[logPeriod]['ForceJB'] || 0) - 1);
+      }
+    }
+    const newLog = gameLog.slice(1);
+    setGameLog(newLog);
+    setCurrentGame(updatedGame);
+    setLastStat(newLog.length > 0 ? { text: newLog[0].text } : null);
+  };
+
+  const endPeriod = () => {
+    if (currentPeriod < 8) {
+      const endPeriodText = `End Period ${currentPeriod}`;
+      setGameLog([{ time: Date.now(), period: currentPeriod, playerIndex: null, statType: 'endPeriod', text: endPeriodText }, ...gameLog]);
+      setLastStat({ text: endPeriodText });
+      setCurrentPeriod(currentPeriod + 1);
+    }
+  };
+  
+  const endGame = async () => {
+    await saveGame(currentGame);
+    setGames([...games, currentGame]);
+    setIsEndGameView(true);
+    setFilterPeriod('Total');
+    setScreen('boxScore');
+  };
+
+  const viewGame = (game) => {
+    setCurrentGame(game);
+    setFilterPeriod('Total');
+    setIsEndGameView(false);
+    setScreen('viewGame');
+  };
+
+  const theme = {
+    bg: darkMode ? 'bg-gray-900' : 'bg-gray-100',
+    card: darkMode ? 'bg-gray-800' : 'bg-white',
+    text: darkMode ? 'text-white' : 'text-gray-900',
+    textMuted: darkMode ? 'text-gray-400' : 'text-gray-600',
+    border: darkMode ? 'border-gray-700' : 'border-gray-200',
+    inputBg: darkMode ? 'bg-gray-700 text-white' : 'bg-white text-gray-900',
+  };
+
+  const StatButton = ({ label, onClick, color = 'bg-blue-500' }) => (
+    <button onClick={onClick} className={`${color} hover:opacity-80 text-white text-xs px-2 py-1 rounded active:scale-95 transition-transform`}>{label}</button>
+  );
+
+  if (screen === 'home') return <HomeScreen onNewGame={() => setScreen('setup')} onViewGames={() => setScreen('viewGames')} darkMode={darkMode} toggleDarkMode={toggleDarkMode} theme={theme} />;
+  if (screen === 'setup') return <GameSetup onStart={startNewGame} onBack={() => setScreen('home')} games={games} darkMode={darkMode} theme={theme} />;
+
+  if (screen === 'game') {
+    const teamScore = calculateTeamScore(currentGame);
+    const opponentScore = calculateOpponentScore(currentGame);
+    return (
+      <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-6xl mx-auto`}>
+        <div className="flex justify-end mb-2">
+          <button onClick={toggleDarkMode} className={`p-2 rounded-full ${theme.card}`}>{darkMode ? <Icon name="Sun" size={20} /> : <Icon name="Moon" size={20} />}</button>
+        </div>
+        <div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-lg shadow-lg p-4 mb-4 text-white">
+          <div className="flex justify-between items-center">
+            <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{currentGame.teamName}</div><div className="text-5xl font-bold">{teamScore}</div></div>
+            <div className="text-center px-4"><div className="text-lg font-semibold">vs</div><div className="text-sm opacity-75">Q{currentPeriod}</div></div>
+            <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{currentGame.opponentName}</div><div className="text-5xl font-bold">{opponentScore}</div></div>
+          </div>
+        </div>
+        <div className={`${theme.card} rounded-lg shadow-lg p-4 mb-4`}>
+          <p className={`text-sm ${theme.textMuted}`}>{currentGame.date} • {currentGame.location}</p>
+          {lastStat && <p className="text-sm text-blue-500 mt-1">Last: {lastStat.text}</p>}
+        </div>
+        
+        <div className="flex gap-2 mb-4 flex-wrap items-center">
+          <button onClick={undoLastStat} disabled={gameLog.length === 0} className="bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700 disabled:opacity-50 flex items-center gap-1 active:scale-95 transition-transform"><Icon name="Undo" size={16} /> Undo</button>
+          <button onClick={endPeriod} disabled={currentPeriod >= 8} className="bg-orange-600 text-white px-4 py-2 rounded hover:bg-orange-700 disabled:opacity-50 active:scale-95 transition-transform">End Period</button>
+          
+          <div className="flex-1"></div>
+          
+          <button onClick={() => setScreen('boxScore')} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 active:scale-95 transition-transform">Box Score</button>
+          {currentGame.enableShotChart && <button onClick={() => { setViewingShotChart({ type: 'team' }); setScreen('shotChart'); }} className="bg-cyan-600 text-white px-4 py-2 rounded hover:bg-cyan-700 active:scale-95 transition-transform">Team Shots</button>}
+          <button onClick={() => setScreen('gameLog')} className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 active:scale-95 transition-transform">Game Log</button>
+          
+          <div className="flex-1"></div>
+          
+          <button onClick={endGame} className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 active:scale-95 transition-transform">End Game</button>
+        </div>
+
+        <div className="bg-yellow-900/30 border-2 border-yellow-600 rounded-lg p-3 mb-4">
+          <div className="font-bold mb-2 text-lg">Opponent</div>
+          <div className="border-2 border-blue-600 rounded p-2 mb-2">
+            <div className="grid grid-cols-6 gap-1">
+              <StatButton label="2PM" onClick={() => recordStat('opponent', '2ptMade')} color="bg-green-600" />
+              <StatButton label="2PX" onClick={() => recordStat('opponent', '2ptMiss')} color="bg-red-600" />
+              <StatButton label="3PM" onClick={() => recordStat('opponent', '3ptMade')} color="bg-green-700" />
+              <StatButton label="3PX" onClick={() => recordStat('opponent', '3ptMiss')} color="bg-red-700" />
+              <StatButton label="FTM" onClick={() => recordStat('opponent', 'FTMade')} color="bg-green-500" />
+              <StatButton label="FTX" onClick={() => recordStat('opponent', 'FTMiss')} color="bg-red-500" />
+            </div>
+          </div>
+          <div className="grid grid-cols-9 gap-1">
+            <StatButton label="OReb" onClick={() => recordStat('opponent', 'OffReb')} color="bg-yellow-600" />
+            <StatButton label="DReb" onClick={() => recordStat('opponent', 'DefReb')} color="bg-yellow-700" />
+            <StatButton label="AST" onClick={() => recordStat('opponent', 'Ast')} color="bg-blue-600" />
+            <StatButton label="STL" onClick={() => recordStat('opponent', 'Stl')} color="bg-indigo-600" />
+            <StatButton label="BLK" onClick={() => recordStat('opponent', 'Blk')} color="bg-purple-600" />
+            <StatButton label="TO" onClick={() => recordStat('opponent', 'TO')} color="bg-gray-600" />
+            <StatButton label="FOUL" onClick={() => recordStat('opponent', 'Foul')} color="bg-rose-600" />
+            <StatButton label="FJB" onClick={() => recordStat('opponent', 'ForceJB')} color="bg-teal-600" />
+            <StatButton label="CJB" onClick={() => recordStat('opponent', 'ConcedeJB')} color="bg-pink-600" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          {currentGame.players.map((player, idx) => (
+            <div key={idx} className={`${theme.card} rounded-lg shadow p-3`}>
+              <div className="font-bold mb-2">#{player.number} {player.name}</div>
+              <div className="border-2 border-blue-600 rounded p-2 mb-2">
+                <div className="grid grid-cols-6 gap-1">
+                  <StatButton label="2PM" onClick={() => handleFieldGoalClick(idx, '2ptMade')} color="bg-green-600" />
+                  <StatButton label="2PX" onClick={() => handleFieldGoalClick(idx, '2ptMiss')} color="bg-red-600" />
+                  <StatButton label="3PM" onClick={() => handleFieldGoalClick(idx, '3ptMade')} color="bg-green-700" />
+                  <StatButton label="3PX" onClick={() => handleFieldGoalClick(idx, '3ptMiss')} color="bg-red-700" />
+                  <StatButton label="FTM" onClick={() => recordStat(idx, 'FTMade')} color="bg-green-500" />
+                  <StatButton label="FTX" onClick={() => recordStat(idx, 'FTMiss')} color="bg-red-500" />
+                </div>
+              </div>
+              <div className="grid grid-cols-9 gap-1">
+                <StatButton label="OReb" onClick={() => recordStat(idx, 'OffReb')} color="bg-yellow-600" />
+                <StatButton label="DReb" onClick={() => recordStat(idx, 'DefReb')} color="bg-yellow-700" />
+                <StatButton label="AST" onClick={() => recordStat(idx, 'Ast')} color="bg-blue-600" />
+                <StatButton label="STL" onClick={() => recordStat(idx, 'Stl')} color="bg-indigo-600" />
+                <StatButton label="BLK" onClick={() => recordStat(idx, 'Blk')} color="bg-purple-600" />
+                <StatButton label="TO" onClick={() => recordStat(idx, 'TO')} color="bg-gray-600" />
+                <StatButton label="FOUL" onClick={() => recordStat(idx, 'Foul')} color="bg-rose-600" />
+                <StatButton label="FJB" onClick={() => recordStat(idx, 'ForceJB')} color="bg-teal-600" />
+                <StatButton label="CJB" onClick={() => recordStat(idx, 'ConcedeJB')} color="bg-pink-600" />
+              </div>
+            </div>
+          ))}
+        </div>
+        {shotChartPopup && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+            <div className={`${theme.card} rounded-lg p-4 max-w-md w-full`}>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold">{shotChartPopup.step === 'location' ? 'Tap shot location' : 'Shot Quality (1-3)'}</h3>
+                <button onClick={() => setShotChartPopup(null)} className="p-1"><Icon name="X" size={24} /></button>
+              </div>
+              {shotChartPopup.step === 'location' ? (
+                <div className="relative bg-orange-200 rounded-lg" style={{ aspectRatio: '1/1' }}>
+                  <svg viewBox="0 0 50 50" className="w-full h-full cursor-crosshair" onClick={handleCourtClick} onTouchEnd={(e) => { e.preventDefault(); handleCourtClick(e); }}>
+                    <rect x="0" y="0" width="50" height="50" fill="#CD853F" stroke="#fff" strokeWidth="0.5"/>
+                    <rect x="0" y="17" width="19" height="16" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                    <circle cx="19" cy="25" r="6" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                    <path d="M 0 3 L 14 3 A 23.75 23.75 0 0 1 14 47 L 0 47" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                    <path d="M 4 21 A 4 4 0 0 1 4 29" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                    <circle cx="5.25" cy="25" r="0.75" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                    <line x1="4" y1="22" x2="4" y2="28" stroke="#fff" strokeWidth="0.5"/>
+                    <line x1="0" y1="19" x2="19" y2="19" stroke="#fff" strokeWidth="0.2"/>
+                    <line x1="0" y1="31" x2="19" y2="31" stroke="#fff" strokeWidth="0.2"/>
+                  </svg>
+                  <div className="absolute bottom-2 left-2 text-xs text-white bg-black/50 px-2 py-1 rounded">Tap where shot was taken</div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="relative bg-orange-200 rounded-lg" style={{ aspectRatio: '1/1' }}>
+                    <svg viewBox="0 0 50 50" className="w-full h-full">
+                      <rect x="0" y="0" width="50" height="50" fill="#CD853F" stroke="#fff" strokeWidth="0.5"/>
+                      <rect x="0" y="17" width="19" height="16" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                      <circle cx="19" cy="25" r="6" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                      <path d="M 0 3 L 14 3 A 23.75 23.75 0 0 1 14 47 L 0 47" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                      <path d="M 4 21 A 4 4 0 0 1 4 29" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                      <circle cx="5.25" cy="25" r="0.75" fill="none" stroke="#fff" strokeWidth="0.3"/>
+                      <line x1="4" y1="22" x2="4" y2="28" stroke="#fff" strokeWidth="0.5"/>
+                      {shotChartPopup.statType.includes('Made') ? (
+                        <circle cx={shotChartPopup.x * 0.5} cy={shotChartPopup.y * 0.5} r="2" fill="#22c55e" stroke="#fff" strokeWidth="0.3"/>
+                      ) : (
+                        <text x={shotChartPopup.x * 0.5} y={shotChartPopup.y * 0.5} textAnchor="middle" dominantBaseline="middle" fill="#ef4444" fontSize="4" fontWeight="bold" stroke="#fff" strokeWidth="0.2">✕</text>
+                      )}
+                    </svg>
+                  </div>
+                  <div className="flex gap-2 justify-center">
+                    {[1, 2, 3].map(q => (
+                      <button key={q} onClick={() => handleQualitySelect(q)} className={`px-8 py-4 rounded-lg text-xl font-bold ${q === 1 ? 'bg-red-500' : q === 2 ? 'bg-yellow-500' : 'bg-green-500'} text-white hover:opacity-90 active:scale-95 transition-transform`}>{q}</button>
+                    ))}
+                  </div>
+                  <p className={`text-center text-sm ${theme.textMuted}`}>1 = Contested • 2 = Average • 3 = Wide Open</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (screen === 'boxScore') return <BoxScore game={currentGame} onBack={() => { if (isEndGameView) { setScreen('home'); setIsEndGameView(false); } else { setScreen('game'); }}} filterPeriod={filterPeriod} setFilterPeriod={setFilterPeriod} darkMode={darkMode} theme={theme} onViewShotChart={(idx) => { setViewingShotChart({ type: idx === 'team' ? 'team' : 'player', playerIndex: idx }); setScreen('shotChart'); }} toggleDarkMode={toggleDarkMode} isEndGameView={isEndGameView} calculatePlayerPoints={calculatePlayerPoints} getPlayerRebounds={getPlayerRebounds} />;
+  if (screen === 'shotChart') return <ShotChartView game={currentGame} viewingShotChart={viewingShotChart} onBack={() => setScreen(isEndGameView ? 'boxScore' : (screen === 'shotChart' ? 'boxScore' : 'viewGame'))} darkMode={darkMode} theme={theme} shotChartFilter={shotChartFilter} setShotChartFilter={setShotChartFilter} showQuality={showQuality} setShowQuality={setShowQuality} />;
+  if (screen === 'gameLog') return <GameLog log={gameLog} onBack={() => setScreen('game')} darkMode={darkMode} theme={theme} />;
+  if (screen === 'viewGames') return <ViewGames games={games} onViewGame={viewGame} onBack={() => setScreen('home')} onDeleteGame={deleteGame} darkMode={darkMode} theme={theme} />;
+  if (screen === 'viewGame') return <ViewGameScreen game={currentGame} onBack={() => setScreen('viewGames')} filterPeriod={filterPeriod} setFilterPeriod={setFilterPeriod} darkMode={darkMode} theme={theme} onViewShotChart={(idx) => { setViewingShotChart({ type: idx === 'team' ? 'team' : 'player', playerIndex: idx }); setScreen('shotChart'); }} toggleDarkMode={toggleDarkMode} />;
+  return null;
+};
+
+const HomeScreen = ({ onNewGame, onViewGames, darkMode, toggleDarkMode, theme }) => (
+  <div className={`min-h-screen ${darkMode ? 'bg-gray-900' : 'bg-gradient-to-b from-orange-500 to-orange-700'} flex items-center justify-center p-4`}>
+    <div className="absolute top-4 right-4">
+      <button onClick={toggleDarkMode} className={`p-3 rounded-full ${theme.card}`}>{darkMode ? <Icon name="Sun" size={24} className="text-yellow-400" /> : <Icon name="Moon" size={24} className="text-gray-700" />}</button>
+    </div>
+    <div className="text-center">
+      <h1 className="text-5xl font-bold text-white mb-8">🏀 Basketball Stats</h1>
+      <div className="space-y-4">
+        <button onClick={onNewGame} className={`w-64 ${darkMode ? 'bg-orange-600 hover:bg-orange-700 text-white' : 'bg-white hover:bg-gray-100 text-orange-600'} px-8 py-4 rounded-lg text-xl font-bold flex items-center justify-center gap-2 mx-auto active:scale-95 transition-transform`}><Icon name="Plus" size={24} /> Create New Game</button>
+        <button onClick={onViewGames} className={`w-64 ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-orange-800 hover:bg-orange-900'} text-white px-8 py-4 rounded-lg text-xl font-bold flex items-center justify-center gap-2 mx-auto active:scale-95 transition-transform`}><Icon name="Eye" size={24} /> View Previous Games</button>
+      </div>
+    </div>
+  </div>
+);
+
+const GameSetup = ({ onStart, onBack, games, darkMode, theme }) => {
+  const [teamName, setTeamName] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [opponent, setOpponent] = useState('');
+  const [location, setLocation] = useState('');
+  const [players, setPlayers] = useState([{ number: '', name: '' }]);
+  const [importGameId, setImportGameId] = useState('');
+  const [enableShotChart, setEnableShotChart] = useState(true);
+
+  const addPlayer = () => setPlayers([...players, { number: '', name: '' }]);
+  const updatePlayer = (idx, field, value) => { const updated = [...players]; updated[idx][field] = value; setPlayers(updated); };
+  const removePlayer = (idx) => { if (players.length > 1) setPlayers(players.filter((_, i) => i !== idx)); };
+  const importPlayers = () => { const game = games.find(g => g.id === parseInt(importGameId)); if (game) setPlayers(game.players.map(p => ({ number: p.number, name: p.name }))); };
+  const handleStart = () => { if (teamName && opponent && players.some(p => p.number && p.name)) onStart({ teamName, date, opponent, location, players: players.filter(p => p.number && p.name), enableShotChart }); };
+
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-2xl mx-auto`}>
+      <button onClick={onBack} className="mb-4 flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> Back</button>
+      <div className={`${theme.card} rounded-lg shadow-lg p-6 space-y-4`}>
+        <h2 className="text-2xl font-bold">New Game Setup</h2>
+        <input type="text" placeholder="Team Name" value={teamName} onChange={(e) => setTeamName(e.target.value)} className={`w-full p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`w-full p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+        <input type="text" placeholder="Opponent" value={opponent} onChange={(e) => setOpponent(e.target.value)} className={`w-full p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+        <input type="text" placeholder="Location" value={location} onChange={(e) => setLocation(e.target.value)} className={`w-full p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" checked={enableShotChart} onChange={(e) => setEnableShotChart(e.target.checked)} className="w-5 h-5 accent-orange-500" />
+          <span>Enable Shot Chart Tracking</span>
+        </label>
+        {games.length > 0 && (
+          <div className="flex gap-2">
+            <select value={importGameId} onChange={(e) => setImportGameId(e.target.value)} className={`flex-1 p-3 border rounded ${theme.inputBg} ${theme.border}`}>
+              <option value="">Import players from previous game...</option>
+              {games.map(g => <option key={g.id} value={g.id}>{g.teamName} vs {g.opponentName || 'Unknown'} ({g.date})</option>)}
+            </select>
+            <button onClick={importPlayers} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Import</button>
+          </div>
+        )}
+        <h3 className="text-xl font-bold mt-4">Players</h3>
+        {players.map((p, idx) => (
+          <div key={idx} className="flex gap-2">
+            <input type="text" placeholder="#" value={p.number} onChange={(e) => updatePlayer(idx, 'number', e.target.value)} className={`w-20 p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+            <input type="text" placeholder="Player Name" value={p.name} onChange={(e) => updatePlayer(idx, 'name', e.target.value)} className={`flex-1 p-3 border rounded ${theme.inputBg} ${theme.border}`} />
+            {players.length > 1 && <button onClick={() => removePlayer(idx)} className="bg-red-500 text-white px-3 rounded hover:bg-red-600"><Icon name="X" size={18} /></button>}
+          </div>
+        ))}
+        <button onClick={addPlayer} className={`w-full ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'} px-4 py-3 rounded`}>+ Add Player</button>
+        <button onClick={handleStart} className="w-full bg-orange-600 text-white px-6 py-4 rounded-lg text-lg font-bold hover:bg-orange-700 active:scale-95 transition-transform">Start Game</button>
+      </div>
+    </div>
+  );
+};
+
+const BoxScore = ({ game, onBack, filterPeriod, setFilterPeriod, isViewMode, darkMode, theme, onViewShotChart, toggleDarkMode, isEndGameView, calculatePlayerPoints, getPlayerRebounds }) => {
+  const getFilteredStats = (entity) => filterPeriod === 'Total' ? entity.stats || {} : entity.periodStats?.[parseInt(filterPeriod)] || {};
+  
+  const calculateTeamTotals = () => {
+    const totals = {};
+    game.players.forEach(player => {
+      const stats = getFilteredStats(player);
+      Object.keys(stats).forEach(key => { totals[key] = (totals[key] || 0) + (stats[key] || 0); });
+    });
+    return totals;
+  };
+  
+  const formatShooting = (made, missed) => {
+    const total = made + missed;
+    if (total === 0) return '';
+    return `${made}/${total} (${Math.round((made / total) * 100)}%)`;
+  };
+
+  const getSortedPlayers = () => {
+    if (!isEndGameView) return game.players.map((p, idx) => ({ ...p, originalIndex: idx }));
+    
+    return game.players.map((p, idx) => ({ ...p, originalIndex: idx })).sort((a, b) => {
+      const aPoints = calculatePlayerPoints(a);
+      const bPoints = calculatePlayerPoints(b);
+      if (bPoints !== aPoints) return bPoints - aPoints;
+      
+      const aReb = getPlayerRebounds(a);
+      const bReb = getPlayerRebounds(b);
+      if (bReb !== aReb) return bReb - aReb;
+      
+      const aAst = a.stats?.Ast || 0;
+      const bAst = b.stats?.Ast || 0;
+      return bAst - aAst;
+    });
+  };
+
+  const sortedPlayers = getSortedPlayers();
+  const teamTotals = calculateTeamTotals();
+  const opponentStats = getFilteredStats(game.opponent);
+  const teamScore = (teamTotals['2ptMade'] || 0) * 2 + (teamTotals['3ptMade'] || 0) * 3 + (teamTotals['FTMade'] || 0);
+  const oppScore = (opponentStats['2ptMade'] || 0) * 2 + (opponentStats['3ptMade'] || 0) * 3 + (opponentStats['FTMade'] || 0);
+  const periods = []; for (let i = 1; i <= (game.maxPeriod || 1); i++) periods.push(i);
+  const opponentName = game.opponentName || 'Opponent';
+
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-6xl mx-auto`}>
+      <div className="flex justify-between items-center mb-4">
+        <button onClick={onBack} className="flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> {isEndGameView ? 'Home' : 'Back'}</button>
+        <button onClick={toggleDarkMode} className={`p-2 rounded-full ${theme.card}`}>{darkMode ? <Icon name="Sun" size={20} /> : <Icon name="Moon" size={20} />}</button>
+      </div>
+      <div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-lg shadow-lg p-4 mb-4 text-white">
+        <div className="flex justify-between items-center">
+          <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{game.teamName}</div><div className="text-4xl font-bold">{teamScore}</div></div>
+          <div className="text-center px-4"><div className="text-lg font-semibold">vs</div><div className="text-xs opacity-75">{filterPeriod === 'Total' ? 'Final' : `Q${filterPeriod}`}</div></div>
+          <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{opponentName}</div><div className="text-4xl font-bold">{oppScore}</div></div>
+        </div>
+      </div>
+      <div className={`${theme.card} rounded-lg shadow-lg p-4`}>
+        <div className="flex gap-2 mb-4 flex-wrap">
+          {periods.map(period => (<button key={period} onClick={() => setFilterPeriod(String(period))} className={`px-4 py-2 rounded ${filterPeriod === String(period) ? 'bg-orange-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Q{period}</button>))}
+          <button onClick={() => setFilterPeriod('Total')} className={`px-4 py-2 rounded ${filterPeriod === 'Total' ? 'bg-orange-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Total</button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className={darkMode ? 'bg-gray-700' : 'bg-gray-100'}>
+                <th className="p-2 text-left">Player</th><th className="p-2">FG</th><th className="p-2">3PT</th><th className="p-2">FT</th><th className="p-2">OREB</th><th className="p-2">DREB</th><th className="p-2">AST</th><th className="p-2">STL</th><th className="p-2">BLK</th><th className="p-2">TO</th><th className="p-2">FJB</th><th className="p-2">CJB</th><th className="p-2">PF</th><th className="p-2">PTS</th>
+                {game.enableShotChart && <th className="p-2">📊</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedPlayers.map((player, idx) => {
+                const stats = getFilteredStats(player);
+                const fgMade = (stats['2ptMade'] || 0) + (stats['3ptMade'] || 0);
+                const fgMiss = (stats['2ptMiss'] || 0) + (stats['3ptMiss'] || 0);
+                const points = (stats['2ptMade'] || 0) * 2 + (stats['3ptMade'] || 0) * 3 + (stats['FTMade'] || 0);
+                const rowBg = idx % 2 === 1 ? (darkMode ? 'bg-gray-700/50' : 'bg-gray-50') : '';
+                return (
+                  <tr key={player.originalIndex} className={`border-b ${theme.border} ${rowBg}`}>
+                    <td className="p-2 font-semibold whitespace-nowrap">#{player.number} {player.name}</td>
+                    <td className="p-2 text-center">{formatShooting(fgMade, fgMiss)}</td>
+                    <td className="p-2 text-center">{formatShooting(stats['3ptMade'] || 0, stats['3ptMiss'] || 0)}</td>
+                    <td className="p-2 text-center">{formatShooting(stats['FTMade'] || 0, stats['FTMiss'] || 0)}</td>
+                    <td className="p-2 text-center">{stats['OffReb'] || 0}</td>
+                    <td className="p-2 text-center">{stats['DefReb'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Ast'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Stl'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Blk'] || 0}</td>
+                    <td className="p-2 text-center">{stats['TO'] || 0}</td>
+                    <td className="p-2 text-center">{stats['ForceJB'] || 0}</td>
+                    <td className="p-2 text-center">{stats['ConcedeJB'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Foul'] || 0}</td>
+                    <td className="p-2 text-center font-bold">{points}</td>
+                    {game.enableShotChart && <td className="p-2 text-center"><button onClick={() => onViewShotChart(player.originalIndex)} className="bg-cyan-600 text-white px-2 py-1 rounded text-xs hover:bg-cyan-700">View</button></td>}
+                  </tr>
+                );
+              })}
+              <tr className={`font-bold ${darkMode ? 'bg-orange-900/50' : 'bg-orange-100'}`}>
+                <td className="p-2">TEAM</td>
+                <td className="p-2 text-center">{formatShooting((teamTotals['2ptMade'] || 0) + (teamTotals['3ptMade'] || 0), (teamTotals['2ptMiss'] || 0) + (teamTotals['3ptMiss'] || 0))}</td>
+                <td className="p-2 text-center">{formatShooting(teamTotals['3ptMade'] || 0, teamTotals['3ptMiss'] || 0)}</td>
+                <td className="p-2 text-center">{formatShooting(teamTotals['FTMade'] || 0, teamTotals['FTMiss'] || 0)}</td>
+                <td className="p-2 text-center">{teamTotals['OffReb'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['DefReb'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Ast'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Stl'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Blk'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['TO'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['ForceJB'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['ConcedeJB'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Foul'] || 0}</td>
+                <td className="p-2 text-center">{teamScore}</td>
+                {game.enableShotChart && <td className="p-2 text-center"><button onClick={() => onViewShotChart('team')} className="bg-cyan-600 text-white px-2 py-1 rounded text-xs hover:bg-cyan-700">Team</button></td>}
+              </tr>
+              <tr className={`font-bold ${darkMode ? 'bg-yellow-900/50' : 'bg-yellow-100'}`}>
+                <td className="p-2">OPP</td>
+                <td className="p-2 text-center">{formatShooting((opponentStats['2ptMade'] || 0) + (opponentStats['3ptMade'] || 0), (opponentStats['2ptMiss'] || 0) + (opponentStats['3ptMiss'] || 0))}</td>
+                <td className="p-2 text-center">{formatShooting(opponentStats['3ptMade'] || 0, opponentStats['3ptMiss'] || 0)}</td>
+                <td className="p-2 text-center">{formatShooting(opponentStats['FTMade'] || 0, opponentStats['FTMiss'] || 0)}</td>
+                <td className="p-2 text-center">{opponentStats['OffReb'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['DefReb'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Ast'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Stl'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Blk'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['TO'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['ForceJB'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['ConcedeJB'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Foul'] || 0}</td>
+                <td className="p-2 text-center">{oppScore}</td>
+                {game.enableShotChart && <td className="p-2"></td>}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className={`text-xs ${theme.textMuted} mt-4`}>{game.date} • {game.location}</p>
+      </div>
+    </div>
+  );
+};
+
+const ViewGameScreen = ({ game, onBack, filterPeriod, setFilterPeriod, darkMode, theme, onViewShotChart, toggleDarkMode }) => {
+  const getFilteredStats = (entity) => filterPeriod === 'Total' ? entity.stats || {} : entity.periodStats?.[parseInt(filterPeriod)] || {};
+  const calculateTeamTotals = () => {
+    const totals = {};
+    game.players.forEach(player => {
+      const stats = getFilteredStats(player);
+      Object.keys(stats).forEach(key => { totals[key] = (totals[key] || 0) + (stats[key] || 0); });
+    });
+    return totals;
+  };
+  const formatShooting = (made, missed) => {
+    const total = made + missed;
+    if (total === 0) return '';
+    return `${made}/${total} (${Math.round((made / total) * 100)}%)`;
+  };
+  const teamTotals = calculateTeamTotals();
+  const opponentStats = getFilteredStats(game.opponent);
+  const teamScore = (teamTotals['2ptMade'] || 0) * 2 + (teamTotals['3ptMade'] || 0) * 3 + (teamTotals['FTMade'] || 0);
+  const oppScore = (opponentStats['2ptMade'] || 0) * 2 + (opponentStats['3ptMade'] || 0) * 3 + (opponentStats['FTMade'] || 0);
+  const periods = []; for (let i = 1; i <= (game.maxPeriod || 1); i++) periods.push(i);
+  const opponentName = game.opponentName || 'Opponent';
+
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-6xl mx-auto`}>
+      <div className="flex justify-between items-center mb-4">
+        <button onClick={onBack} className="flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> Back</button>
+        <button onClick={toggleDarkMode} className={`p-2 rounded-full ${theme.card}`}>{darkMode ? <Icon name="Sun" size={20} /> : <Icon name="Moon" size={20} />}</button>
+      </div>
+      
+      {game.enableShotChart && (
+        <div className="flex gap-2 mb-4 flex-wrap">
+          <button onClick={() => onViewShotChart('team')} className="bg-cyan-600 text-white px-4 py-2 rounded hover:bg-cyan-700">Team Shot Chart</button>
+          {game.players.map((player, idx) => (
+            <button key={idx} onClick={() => onViewShotChart(idx)} className="bg-cyan-700 text-white px-3 py-2 rounded hover:bg-cyan-800 text-sm">#{player.number} {player.name}</button>
+          ))}
+        </div>
+      )}
+
+      <div className="bg-gradient-to-r from-orange-600 to-orange-500 rounded-lg shadow-lg p-4 mb-4 text-white">
+        <div className="flex justify-between items-center">
+          <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{game.teamName}</div><div className="text-4xl font-bold">{teamScore}</div></div>
+          <div className="text-center px-4"><div className="text-lg font-semibold">vs</div><div className="text-xs opacity-75">{filterPeriod === 'Total' ? 'Final' : `Q${filterPeriod}`}</div></div>
+          <div className="text-center flex-1"><div className="text-sm font-medium opacity-90">{opponentName}</div><div className="text-4xl font-bold">{oppScore}</div></div>
+        </div>
+      </div>
+      <div className={`${theme.card} rounded-lg shadow-lg p-4`}>
+        <div className="flex gap-2 mb-4 flex-wrap">
+          {periods.map(period => (<button key={period} onClick={() => setFilterPeriod(String(period))} className={`px-4 py-2 rounded ${filterPeriod === String(period) ? 'bg-orange-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Q{period}</button>))}
+          <button onClick={() => setFilterPeriod('Total')} className={`px-4 py-2 rounded ${filterPeriod === 'Total' ? 'bg-orange-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Total</button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className={darkMode ? 'bg-gray-700' : 'bg-gray-100'}>
+                <th className="p-2 text-left">Player</th><th className="p-2">FG</th><th className="p-2">3PT</th><th className="p-2">FT</th><th className="p-2">OREB</th><th className="p-2">DREB</th><th className="p-2">AST</th><th className="p-2">STL</th><th className="p-2">BLK</th><th className="p-2">TO</th><th className="p-2">FJB</th><th className="p-2">CJB</th><th className="p-2">PF</th><th className="p-2">PTS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {game.players.map((player, idx) => {
+                const stats = getFilteredStats(player);
+                const fgMade = (stats['2ptMade'] || 0) + (stats['3ptMade'] || 0);
+                const fgMiss = (stats['2ptMiss'] || 0) + (stats['3ptMiss'] || 0);
+                const points = (stats['2ptMade'] || 0) * 2 + (stats['3ptMade'] || 0) * 3 + (stats['FTMade'] || 0);
+                const rowBg = idx % 2 === 1 ? (darkMode ? 'bg-gray-700/50' : 'bg-gray-50') : '';
+                return (
+                  <tr key={idx} className={`border-b ${theme.border} ${rowBg}`}>
+                    <td className="p-2 font-semibold whitespace-nowrap">#{player.number} {player.name}</td>
+                    <td className="p-2 text-center">{formatShooting(fgMade, fgMiss)}</td>
+                    <td className="p-2 text-center">{formatShooting(stats['3ptMade'] || 0, stats['3ptMiss'] || 0)}</td>
+                    <td className="p-2 text-center">{formatShooting(stats['FTMade'] || 0, stats['FTMiss'] || 0)}</td>
+                    <td className="p-2 text-center">{stats['OffReb'] || 0}</td>
+                    <td className="p-2 text-center">{stats['DefReb'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Ast'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Stl'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Blk'] || 0}</td>
+                    <td className="p-2 text-center">{stats['TO'] || 0}</td>
+                    <td className="p-2 text-center">{stats['ForceJB'] || 0}</td>
+                    <td className="p-2 text-center">{stats['ConcedeJB'] || 0}</td>
+                    <td className="p-2 text-center">{stats['Foul'] || 0}</td>
+                    <td className="p-2 text-center font-bold">{points}</td>
+                  </tr>
+                );
+              })}
+              <tr className={`font-bold ${darkMode ? 'bg-orange-900/50' : 'bg-orange-100'}`}>
+                <td className="p-2">TEAM</td>
+                <td className="p-2 text-center">{formatShooting((teamTotals['2ptMade'] || 0) + (teamTotals['3ptMade'] || 0), (teamTotals['2ptMiss'] || 0) + (teamTotals['3ptMiss'] || 0))}</td>
+                <td className="p-2 text-center">{formatShooting(teamTotals['3ptMade'] || 0, teamTotals['3ptMiss'] || 0)}</td>
+                <td className="p-2 text-center">{formatShooting(teamTotals['FTMade'] || 0, teamTotals['FTMiss'] || 0)}</td>
+                <td className="p-2 text-center">{teamTotals['OffReb'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['DefReb'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Ast'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Stl'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Blk'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['TO'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['ForceJB'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['ConcedeJB'] || 0}</td>
+                <td className="p-2 text-center">{teamTotals['Foul'] || 0}</td>
+                <td className="p-2 text-center">{teamScore}</td>
+              </tr>
+              <tr className={`font-bold ${darkMode ? 'bg-yellow-900/50' : 'bg-yellow-100'}`}>
+                <td className="p-2">OPP</td>
+                <td className="p-2 text-center">{formatShooting((opponentStats['2ptMade'] || 0) + (opponentStats['3ptMade'] || 0), (opponentStats['2ptMiss'] || 0) + (opponentStats['3ptMiss'] || 0))}</td>
+                <td className="p-2 text-center">{formatShooting(opponentStats['3ptMade'] || 0, opponentStats['3ptMiss'] || 0)}</td>
+                <td className="p-2 text-center">{formatShooting(opponentStats['FTMade'] || 0, opponentStats['FTMiss'] || 0)}</td>
+                <td className="p-2 text-center">{opponentStats['OffReb'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['DefReb'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Ast'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Stl'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Blk'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['TO'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['ForceJB'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['ConcedeJB'] || 0}</td>
+                <td className="p-2 text-center">{opponentStats['Foul'] || 0}</td>
+                <td className="p-2 text-center">{oppScore}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className={`text-xs ${theme.textMuted} mt-4`}>{game.date} • {game.location}</p>
+      </div>
+    </div>
+  );
+};
+
+const ShotChartView = ({ game, viewingShotChart, onBack, darkMode, theme, shotChartFilter, setShotChartFilter, showQuality, setShowQuality }) => {
+  const isIndividual = viewingShotChart.type === 'player';
+  
+  const getShots = () => {
+    if (viewingShotChart.type === 'team') return game.players.flatMap((p, idx) => (p.shotChart || []).map(shot => ({ ...shot, playerIndex: idx, playerName: `#${p.number} ${p.name}` })));
+    const player = game.players[viewingShotChart.playerIndex];
+    return (player.shotChart || []).map(shot => ({ ...shot, playerName: `#${player.number} ${player.name}` }));
+  };
+  const allShots = getShots();
+  const filteredShots = allShots.filter(shot => {
+    if (shotChartFilter === 'all') return true;
+    if (shotChartFilter === 'made') return shot.made;
+    if (shotChartFilter === 'missed') return !shot.made;
+    return true;
+  });
+  const playerName = viewingShotChart.type === 'team' ? game.teamName : `#${game.players[viewingShotChart.playerIndex].number} ${game.players[viewingShotChart.playerIndex].name}`;
+  const madeCount = allShots.filter(s => s.made).length;
+  const missedCount = allShots.filter(s => !s.made).length;
+  const fgPct = madeCount + missedCount > 0 ? Math.round((madeCount / (madeCount + missedCount)) * 100) : 0;
+
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-4xl mx-auto`}>
+      <button onClick={onBack} className="mb-4 flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> Back</button>
+      <div className={`${theme.card} rounded-lg shadow-lg p-4`}>
+        <h2 className="text-xl font-bold mb-2">{playerName} Shot Chart</h2>
+        <p className={`text-sm ${theme.textMuted} mb-4`}>{madeCount}/{madeCount + missedCount} FG ({fgPct}%)</p>
+        
+        {!isIndividual && (
+          <div className="flex gap-2 mb-4 flex-wrap items-center">
+            <button onClick={() => setShotChartFilter('all')} className={`px-3 py-1 rounded text-sm ${shotChartFilter === 'all' ? 'bg-blue-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>All ({allShots.length})</button>
+            <button onClick={() => setShotChartFilter('made')} className={`px-3 py-1 rounded text-sm ${shotChartFilter === 'made' ? 'bg-green-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Made ({madeCount})</button>
+            <button onClick={() => setShotChartFilter('missed')} className={`px-3 py-1 rounded text-sm ${shotChartFilter === 'missed' ? 'bg-red-600 text-white' : darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>Missed ({missedCount})</button>
+            <span className={`${theme.textMuted} px-2`}>|</span>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={showQuality} onChange={(e) => setShowQuality(e.target.checked)} className="w-4 h-4 accent-orange-500" />
+              <span className="text-sm">Show Quality</span>
+            </label>
+          </div>
+        )}
+
+        <div className="relative bg-orange-200 rounded-lg" style={{ aspectRatio: '1/1' }}>
+          <svg viewBox="0 0 50 50" className="w-full h-full">
+            <rect x="0" y="0" width="50" height="50" fill="#CD853F" stroke="#fff" strokeWidth="0.5"/>
+            <rect x="0" y="17" width="19" height="16" fill="none" stroke="#fff" strokeWidth="0.3"/>
+            <circle cx="19" cy="25" r="6" fill="none" stroke="#fff" strokeWidth="0.3"/>
+            <path d="M 0 3 L 14 3 A 23.75 23.75 0 0 1 14 47 L 0 47" fill="none" stroke="#fff" strokeWidth="0.3"/>
+            <path d="M 4 21 A 4 4 0 0 1 4 29" fill="none" stroke="#fff" strokeWidth="0.3"/>
+            <circle cx="5.25" cy="25" r="0.75" fill="none" stroke="#fff" strokeWidth="0.3"/>
+            <line x1="4" y1="22" x2="4" y2="28" stroke="#fff" strokeWidth="0.5"/>
+            <line x1="0" y1="19" x2="19" y2="19" stroke="#fff" strokeWidth="0.2"/>
+            <line x1="0" y1="31" x2="19" y2="31" stroke="#fff" strokeWidth="0.2"/>
+            {filteredShots.map((shot, idx) => {
+              const cx = shot.x * 0.5;
+              const cy = shot.y * 0.5;
+              const color = shot.made ? '#22c55e' : '#ef4444';
+              
+              if (isIndividual) {
+                return (
+                  <text key={idx} x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize="3.5" fontWeight="bold" stroke="#fff" strokeWidth="0.15">{shot.quality}</text>
+                );
+              }
+              
+              if (showQuality) {
+                return (
+                  <text key={idx} x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize="3.5" fontWeight="bold" stroke="#fff" strokeWidth="0.15">{shot.quality}</text>
+                );
+              }
+              
+              if (shot.made) {
+                return <circle key={idx} cx={cx} cy={cy} r="1" fill={color} stroke="#fff" strokeWidth="0.15" opacity="0.9"/>;
+              } else {
+                return (
+                  <text key={idx} x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize="2.5" fontWeight="bold" stroke="#fff" strokeWidth="0.1">✕</text>
+                );
+              }
+            })}
+          </svg>
+        </div>
+        
+        <div className="flex justify-center gap-6 mt-4">
+          <div className="flex items-center gap-2"><div className="w-4 h-4 rounded-full bg-green-500"></div><span className="text-sm">Made</span></div>
+          <div className="flex items-center gap-2"><div className="w-4 h-4 flex items-center justify-center text-red-500 font-bold">✕</div><span className="text-sm">Missed</span></div>
+        </div>
+
+        <div className={`mt-4 p-3 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+          <h4 className="font-bold mb-2">Shot Quality Breakdown</h4>
+          <div className="grid grid-cols-3 gap-4 text-center text-sm">
+            {[1, 2, 3].map(q => {
+              const qShots = allShots.filter(s => s.quality === q);
+              const qMade = qShots.filter(s => s.made).length;
+              const qPct = qShots.length > 0 ? Math.round((qMade / qShots.length) * 100) : 0;
+              return (<div key={q}><div className={`font-bold ${q === 1 ? 'text-red-500' : q === 2 ? 'text-yellow-500' : 'text-green-500'}`}>Quality {q}</div><div>{qMade}/{qShots.length} ({qPct}%)</div></div>);
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const GameLog = ({ log, onBack, darkMode, theme }) => (
+  <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-2xl mx-auto`}>
+    <button onClick={onBack} className="mb-4 flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> Back</button>
+    <div className={`${theme.card} rounded-lg shadow-lg p-4`}>
+      <h2 className="text-2xl font-bold mb-4">Game Log</h2>
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {log.length === 0 ? <p className={theme.textMuted}>No stats recorded yet</p> : log.map((entry, idx) => (
+          <div key={idx} className={`p-2 ${darkMode ? 'bg-gray-700' : 'bg-gray-50'} rounded border-l-4 ${entry.statType === 'endPeriod' ? 'border-blue-600' : 'border-orange-600'}`}>
+            <span className={`text-xs ${theme.textMuted}`}>Q{entry.period}</span>
+            <p className="text-sm">{entry.text}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const ViewGames = ({ games, onViewGame, onBack, onDeleteGame, darkMode, theme }) => {
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const handleDelete = (gameId) => { onDeleteGame(gameId); setConfirmDelete(null); };
+  return (
+    <div className={`min-h-screen ${theme.bg} ${theme.text} p-4 max-w-2xl mx-auto`}>
+      <button onClick={onBack} className="mb-4 flex items-center gap-2 text-blue-500 hover:text-blue-400"><Icon name="ArrowLeft" size={20} /> Back</button>
+      <div className={`${theme.card} rounded-lg shadow-lg p-6`}>
+        <h2 className="text-2xl font-bold mb-4">Previous Games</h2>
+        {games.length === 0 ? <p className={theme.textMuted}>No games recorded yet</p> : (
+          <div className="space-y-2">
+            {games.map(game => {
+              const oppName = game.opponentName || 'Unknown';
+              return (
+                <div key={game.id} className="flex gap-2">
+                  <button onClick={() => onViewGame(game)} className={`flex-1 p-4 ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-50 hover:bg-gray-100'} rounded-lg text-left border ${theme.border}`}>
+                    <div className="font-bold">{game.teamName} vs {oppName}</div>
+                    <div className={`text-sm ${theme.textMuted}`}>{game.date} • {game.location}</div>
+                  </button>
+                  {confirmDelete === game.id ? (
+                    <div className="flex gap-1">
+                      <button onClick={() => handleDelete(game.id)} className="bg-red-600 text-white px-3 rounded hover:bg-red-700">Confirm</button>
+                      <button onClick={() => setConfirmDelete(null)} className="bg-gray-500 text-white px-3 rounded hover:bg-gray-600">Cancel</button>
+                    </div>
+                  ) : (<button onClick={() => setConfirmDelete(game.id)} className="bg-red-500 text-white px-3 rounded hover:bg-red-600"><Icon name="Trash2" size={18} /></button>)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+    // Render the app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<BasketballStatsApp />);
+  </script>
+</body>
+</html>
